@@ -1,0 +1,14 @@
+#record-button {
+  margin-top: 40px;
+  font-size: 20px;
+  text-align: center;
+  display: block;
+  color: red;
+}
+
+#stop-button {
+  margin-top: 40px;
+  font-size: 20px;
+  text-align: center;
+  display: block;
+}
