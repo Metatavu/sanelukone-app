@@ -9,24 +9,26 @@
     }
   };
   
-  console.err = function (message) {
+  console.error = function (message) {
     if (typeof message == 'object') {
       $('#debug').append($('<div style="color: red">').html(JSON.stringify(message)))
     } else {
       $('#debug').append($('<div style="color: red">').html(message))
     }
   };
+  
+  console.err = console.error;
 
   window.onerror = function (err) {
-    console.err(err);
+    console.error(err);
   }
   
   $.widget("custom.client", {
     options: {
       reconnectTimeout: 3000,
-      clientId: null,
+      sessionId: "demo-session",
       port: 8000,
-      host: '192.168.1.17', // '192.168.100.12'
+      host: '192.168.1.4', // '192.168.100.12'
     },
     
     _create : function() {
@@ -35,8 +37,8 @@
       this._state = "DISCONNECTED";
     },
     
-    connect: function (sessionId) {
-      this._connect(sessionId);
+    connect: function () {
+      this._connect();
     },
     
     sendClip: function(data) {
@@ -47,11 +49,11 @@
       this._sendMessage(type, data);
     },
     
-    _connect: function (sessionId) {
+    _connect: function () {
       this._state = 'CONNECTING';
       console.log("Connecting...");
       
-      this._webSocket = this._createWebSocket(sessionId);
+      this._webSocket = this._createWebSocket(this.options.sessionId);
       if (!this._webSocket) {
         console.log("Could not create websocket");
         return;
@@ -95,7 +97,7 @@
     },
 
     _createWebSocket: function (sessionId) {
-      var url = 'ws://' + this.options.host + ':' + this.options.port;
+      var url = 'ws://' + this.options.host + ':' + this.options.port + '/' + sessionId;
       console.log("Connecting to " + url);
       
       var socket = null;
@@ -157,7 +159,7 @@
         binaryArray[i] = data[i];
       }
 
-      this._webSocket.send(binaryArray.buffer);
+      this._webSocket.send(binaryArray);
     },
     
     _onWebSocketMessage: function (event) {
@@ -184,8 +186,8 @@
     _create : function() {
     },
     
-    removeFile: function (file, callback) {
-      file.remove(function () {
+    removeClip: function (clip, callback) {
+      clip.remove(function () {
         if (callback) {
           callback(null);
         }
@@ -200,30 +202,52 @@
       });
     },
     
-    nextClip: function (callback) {
-      this._readClips(function (err, entries) {
+    removeAllClips: function () {
+      this._readClips(null, function (err, entries) {
+        for (var i = 0, l = entries.length; i < l; i++) {
+          this.removeClip(entries[i]);
+        }
+      }.bind(this));
+    },
+    
+    nextClip: function (sessionId, callback) {
+      this._readClips(sessionId, function (err, entries) {
         callback(err, entries && entries.length ? entries[0] : null);
       }.bind(this));
     },
     
-    addClip: function (data) {
-      var filename = (String) (new Date().getTime()) + '.clip';
+    nextSession: function (callback) {
+      this._readClips(null, function (err, entries) {
+        if (err) {
+          callback(err);
+        } else {
+          if (entries && entries.length) {
+            callback(null, entries[0].name.split('_')[0]);
+          } else {
+            callback(null, null);
+          }
+        }
+      }.bind(this));
+    },
+    
+    addClip: function (sessionId, blob) {
+      var filename = sessionId + '_' + (String) (new Date().getTime()) + '.clip';
       window.resolveLocalFileSystemURL(cordova.file.dataDirectory, function(dir) {
         dir.getFile(filename, { create: true }, function(file) {
           file.createWriter(function(fileWriter) {
-            var blob = new Blob(data);
             fileWriter.write(blob);
           });
         });
       });
     },
     
-    _readClips: function(callback) {
+    _readClips: function(sessionId, callback) {
       this._readFiles(function (err, entries) {
         var clips = [];
         for (var i = 0, l = entries.length; i < l; i++) {
           var entry = entries[i];
-          if (entry.name && entry.name.endsWith('.clip')) {
+          var entryName = entry.name;
+          if (entryName && (sessionId == null || entryName.startsWith(sessionId)) && entryName.endsWith('.clip')) {
             clips.push(entry);
           }
         }
@@ -245,60 +269,125 @@
     
   });
   
+  $.widget("custom.encoder", {
+    
+    toWave: function (data, sampleRate, channels) {
+      var encoder = new WavAudioEncoder(sampleRate, channels);
+      encoder.encode([data]);
+      return encoder.finish("audio/wav");
+    }
+    
+  });
+  
   $.widget("custom.sanelukone", {
   
     _create : function() {
       console.log("Init");
 
-      this._processingClip = null;
+      this._recordSessionId = null;
+      this._transmitSessionId = null;
+      this._transmitClip = null;
       
       this.element.client();
       this.element.fileStore();
+      this.element.encoder();
       
       this.element.on('deviceready', this._onDeviceReady.bind(this));
     },
     
     _onDeviceReady: function () {
+      this.element.fileStore('removeAllClips');
+      
       this.element.client('connect');
       this.element.client('sendMessage', 'system:hello');
 
-      this.element.on('clip:processed', this._onClipProcessed.bind(this));
+      this.element.on('transmit:clip-transmitted', this._onClipTransmitted.bind(this));
     
       window.addEventListener("audioinput", this._onAudioInput.bind(this), false);
       window.addEventListener("audioinputerror", this._onAudioInputError.bind(this), false);
 
       this.element.find('#record-button').click(this._onRecordButtonClick.bind(this));
       this.element.find('#stop-button').click(this._onStopButtonClick.bind(this));//
-      this._processNextClip();
+      this._transmitNextClip();
     },
     
-    _onClipProcessed: function () {
-      console.log("Processed");
-      this._processNextClip();
+    _onClipTransmitted: function () {
+      this.element.fileStore('removeClip', this._transmitClip, function () {
+        this._transmitNextClip();
+      }.bind(this));
     },
     
-    _processNextClip: function () {
+    _transmitNextClip: function () {
       setTimeout(function () {
-        this.element.fileStore('nextClip', function (err, clipEntry) {
-          if (err) {
-            console.err(err);
+        this._getTransmitSessionId(function (sessionErr, transmitSessionId) {
+          if (sessionErr) {
+            console.error("Session error: " + sessionErr);
           } else {
-            if (clipEntry != null) {
-              console.log("Going to process clip");
+            if (!transmitSessionId) {
+              // No untransmitted sessions found
+              if (this._transmitSessionId != null && this._transmitSessionId != this._recordSessionId) {
+                console.log("Stopped transmitting");
+                // Was transmitting, but not the current record session so there can be no more data for this session
+                this.element.client('sendMessage', 'transmit:end', {
+                  sessionId: this._transmitSessionId
+                });
+                
+                this._transmitSessionId = null;
+              }
               
-              this._processingClip = clipEntry;
-              this.element.client('sendClip', data);
+              this._transmitNextClip();
             } else {
-              this._processNextClip();
+              console.log("Untransmitted session:" + transmitSessionId);
+              
+              if (this._transmitSessionId == null) {
+                console.log("Started transmitting");
+                // Was not transmitting, but new session found, so we should start new transit session
+                
+                this.element.client('sendMessage', 'transmit:start', {
+                  sessionId: transmitSessionId
+                });
+                
+                this._transmitSessionId = transmitSessionId;
+              }
+              
+              this.element.fileStore('nextClip', this._transmitSessionId, function (err, clipEntry) {
+                if (err) {
+                  console.error(err);
+                } else {
+                  if (clipEntry != null) {
+                    console.log("Going to transmit clip");
+                    
+                    this._transmitClip = clipEntry;
+                    clipEntry.file(function (clip) {
+                      var reader = new FileReader();
+                      reader.onloadend = function() {
+                        this.element.client('sendClip', new Uint8Array(reader.result));
+                      }.bind(this);
+                      
+                      reader.readAsArrayBuffer(clip);
+                    }.bind(this));
+                  } else {
+                    this._transmitNextClip();
+                  }
+                }
+              }.bind(this));
             }
           }
         }.bind(this));
       }.bind(this), 300);
     },
     
+    _getTransmitSessionId: function (callback) {
+      this.element.fileStore('nextSession', function (err, sessionId) {
+        callback(err, sessionId);
+      });
+    },
+    
     _onAudioInput: function (event) {
       var data = event.data;
-      this.element.fileStore('addClip', data);
+      console.log("input " + data.length);
+      var waveBlob = this.element.encoder('toWave', data, 16000, 1);
+      this.element.fileStore('addClip', this._recordSessionId, waveBlob);
     },
     
     _onAudioInputError: function (error) {
@@ -306,12 +395,13 @@
     },
     
     _onRecordButtonClick: function () {
-      console.log("Start recording");
+      this._recordSessionId = uuid.v4();
       
       try {
-        var sourceType = device.platform == 'Android' ? audioinput.VOICE_RECOGNITION : audioinput.UNPROCESSED;
+        var sourceType = audioinput.UNPROCESSED;
         audioinput.start({
-          bufferSize: 8192,
+          bufferSize: 1024 * 64,
+          sampleRate: 16000,
           channels: audioinput.CHANNELS.MONO,
           format: audioinput.FORMAT.PCM_16BIT,
           normalize: false,
@@ -319,14 +409,25 @@
           audioSourceType: sourceType
         });
       } catch (e) {
-        console.err(e);
+        console.error(e);
       }
       
-      console.log("Recoding...");// 
+      this.element.client('sendMessage', 'record:start', {
+        sessionId: this._recordSessionId
+      });
+      
+      console.log("Recoding...");
     },
     
     _onStopButtonClick: function () {
       audioinput.stop();
+      
+      this.element.client('sendMessage', 'record:stop', {
+        sessionId: this._recordSessionId
+      });
+      
+      this._recordSessionId = null;
+      
       console.log("Recoding stopped");
     }
     
