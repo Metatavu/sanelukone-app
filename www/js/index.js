@@ -37,8 +37,8 @@
   $.widget("custom.client", {
     options: {
       reconnectTimeout: 3000,
-      port: 8000,
-      host: '192.168.100.12'
+      port: 443,
+      host: 'demo.sanelukone.fi'
     },
     
     _create : function() {
@@ -107,7 +107,7 @@
     },
 
     _createWebSocket: function () {
-      var url = 'ws://' + this.options.host + ':' + this.options.port;
+      var url = 'wss://' + this.options.host + ':' + this.options.port;
       console.log("Connecting to " + url);
       
       var socket = null;
