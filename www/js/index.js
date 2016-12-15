@@ -3,17 +3,17 @@
   
   console.log = function (message) {
     if (typeof message == 'object') {
-      $('#debug').append($('<div>').html(JSON.stringify(message)))
+      $('#debug').prepend($('<div>').html(JSON.stringify(message)))
     } else {
-      $('#debug').append($('<div>').html(message))
+      $('#debug').prepend($('<div>').html(message))
     }
   };
   
   console.error = function (message) {
     if (typeof message == 'object') {
-      $('#debug').append($('<div style="color: red">').html(JSON.stringify(message)))
+      $('#debug').prepend($('<div style="color: red">').html(JSON.stringify(message)))
     } else {
-      $('#debug').append($('<div style="color: red">').html(message))
+      $('#debug').prepend($('<div style="color: red">').html(message))
     }
   };
   
@@ -23,12 +23,22 @@
     console.error(err);
   }
   
+  var SAMPLE_RATE = 16000;
+  
+  function blobToBase64(blob, callback) {
+    var reader = new FileReader();
+    reader.onloadend = function() {
+      callback(null, reader.result);
+    }
+    
+    reader.readAsDataURL(blob); 
+  }
+  
   $.widget("custom.client", {
     options: {
       reconnectTimeout: 3000,
-      sessionId: "demo-session",
       port: 8000,
-      host: '192.168.1.4', // '192.168.100.12'
+      host: '192.168.100.12'
     },
     
     _create : function() {
@@ -53,7 +63,7 @@
       this._state = 'CONNECTING';
       console.log("Connecting...");
       
-      this._webSocket = this._createWebSocket(this.options.sessionId);
+      this._webSocket = this._createWebSocket();
       if (!this._webSocket) {
         console.log("Could not create websocket");
         return;
@@ -96,8 +106,8 @@
       }, this), this.options.reconnectTimeout);
     },
 
-    _createWebSocket: function (sessionId) {
-      var url = 'ws://' + this.options.host + ':' + this.options.port + '/' + sessionId;
+    _createWebSocket: function () {
+      var url = 'ws://' + this.options.host + ':' + this.options.port;
       console.log("Connecting to " + url);
       
       var socket = null;
@@ -153,13 +163,7 @@
     },
     
     _sendBinaryData: function (data) {
-      var binaryArray = new Uint8Array(data.length);
-      
-      for (var i = 0, l = data.length; i < l; i++) {
-        binaryArray[i] = data[i];
-      }
-
-      this._webSocket.send(binaryArray);
+      this._webSocket.send(data);
     },
     
     _onWebSocketMessage: function (event) {
@@ -282,11 +286,10 @@
   $.widget("custom.sanelukone", {
   
     _create : function() {
-      console.log("Init");
-
       this._recordSessionId = null;
       this._transmitSessionId = null;
       this._transmitClip = null;
+      this._stop = false;
       
       this.element.client();
       this.element.fileStore();
@@ -323,9 +326,9 @@
           if (sessionErr) {
             console.error("Session error: " + sessionErr);
           } else {
-            if (!transmitSessionId) {
+            if (transmitSessionId == null) {
               // No untransmitted sessions found
-              if (this._transmitSessionId != null && this._transmitSessionId != this._recordSessionId) {
+              if (this._transmitSessionId != null && this._recordSessionId == null) {
                 console.log("Stopped transmitting");
                 // Was transmitting, but not the current record session so there can be no more data for this session
                 this.element.client('sendMessage', 'transmit:end', {
@@ -337,8 +340,6 @@
               
               this._transmitNextClip();
             } else {
-              console.log("Untransmitted session:" + transmitSessionId);
-              
               if (this._transmitSessionId == null) {
                 console.log("Started transmitting");
                 // Was not transmitting, but new session found, so we should start new transit session
@@ -385,9 +386,22 @@
     
     _onAudioInput: function (event) {
       var data = event.data;
-      console.log("input " + data.length);
-      var waveBlob = this.element.encoder('toWave', data, 16000, 1);
+      var waveBlob = this.element.encoder('toWave', data, SAMPLE_RATE, 1);
+          
       this.element.fileStore('addClip', this._recordSessionId, waveBlob);
+      
+      if (this._stop) {
+        audioinput.stop();
+        
+        this.element.client('sendMessage', 'record:stop', {
+          sessionId: this._recordSessionId
+        });
+        
+        this._recordSessionId = null;
+        
+        console.log("Recoding stopped");
+        console.log("--------------------");
+      }
     },
     
     _onAudioInputError: function (error) {
@@ -396,15 +410,16 @@
     
     _onRecordButtonClick: function () {
       this._recordSessionId = uuid.v4();
+      this._stop = false;
       
       try {
         var sourceType = audioinput.UNPROCESSED;
         audioinput.start({
-          bufferSize: 1024 * 64,
-          sampleRate: 16000,
+          bufferSize: 1024 * 20,
+          sampleRate: SAMPLE_RATE,
           channels: audioinput.CHANNELS.MONO,
           format: audioinput.FORMAT.PCM_16BIT,
-          normalize: false,
+          normalize: true,
           streamToWebAudio: false,
           audioSourceType: sourceType
         });
@@ -420,15 +435,7 @@
     },
     
     _onStopButtonClick: function () {
-      audioinput.stop();
-      
-      this.element.client('sendMessage', 'record:stop', {
-        sessionId: this._recordSessionId
-      });
-      
-      this._recordSessionId = null;
-      
-      console.log("Recoding stopped");
+      this._stop = true;
     }
     
   });
