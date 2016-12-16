@@ -234,12 +234,13 @@
       }.bind(this));
     },
     
-    addClip: function (sessionId, blob) {
+    addClip: function (sessionId, blob, callback) {
       var filename = sessionId + '_' + (String) (new Date().getTime()) + '.clip';
       window.resolveLocalFileSystemURL(cordova.file.dataDirectory, function(dir) {
         dir.getFile(filename, { create: true }, function(file) {
           file.createWriter(function(fileWriter) {
             fileWriter.write(blob);
+            callback(null);
           });
         });
       });
@@ -388,20 +389,26 @@
       var data = event.data;
       var waveBlob = this.element.encoder('toWave', data, SAMPLE_RATE, 1);
           
-      this.element.fileStore('addClip', this._recordSessionId, waveBlob);
-      
       if (this._stop) {
         audioinput.stop();
-        
-        this.element.client('sendMessage', 'record:stop', {
-          sessionId: this._recordSessionId
-        });
-        
-        this._recordSessionId = null;
-        
-        console.log("Recoding stopped");
-        console.log("--------------------");
       }
+      
+      this.element.fileStore('addClip', this._recordSessionId, waveBlob, function(err) {
+        if (err) {
+          console.error(err);
+        } else {
+          if (this._stop) {
+            this.element.client('sendMessage', 'record:stop', {
+              sessionId: this._recordSessionId
+            });
+            
+            this._recordSessionId = null;
+            
+            console.log("Recoding stopped");
+            console.log("--------------------");
+          }
+        }
+      }.bind(this));
     },
     
     _onAudioInputError: function (error) {
